@@ -1,6 +1,6 @@
-Complete this code dtar that last line
 
-name: 🎮 Build Shadow Village – RE4 Horror Game IPA
+
+- name: 🎮 Build Shadow Village – RE4 Horror Game IPA
 
 on:
   push:
