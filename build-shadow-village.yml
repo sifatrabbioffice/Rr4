@@ -1,0 +1,1362 @@
+name: 🎮 Build Shadow Village – RE4 Horror Game IPA
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build-game:
+    name: 🏗 Build iOS Game
+    runs-on: macos-14
+
+    steps:
+      - name: 📥 Checkout
+        uses: actions/checkout@v4
+
+      - name: 🔧 Select Xcode
+        run: |
+          sudo xcode-select -s "$(ls -d /Applications/Xcode*.app | sort -V | tail -1)/Contents/Developer"
+          xcodebuild -version
+
+      - name: 📦 Install XcodeGen
+        run: brew install xcodegen
+
+      - name: 📁 Create Directories
+        run: |
+          mkdir -p ShadowVillage/Sources/Scenes
+          mkdir -p ShadowVillage/Sources/Nodes
+          mkdir -p ShadowVillage/Resources
+
+      # ── PhysicsCategory ────────────────────────────────────────────────────
+      - name: 📄 PhysicsCategory.swift
+        run: |
+          cat > ShadowVillage/Sources/PhysicsCategory.swift << 'EOF'
+          struct PhysicsCategory {
+              static let none:   UInt32 = 0
+              static let player: UInt32 = 0x1 << 0
+              static let enemy:  UInt32 = 0x1 << 1
+              static let bullet: UInt32 = 0x1 << 2
+              static let wall:   UInt32 = 0x1 << 3
+              static let item:   UInt32 = 0x1 << 4
+              static let boss:   UInt32 = 0x1 << 5
+          }
+          EOF
+
+      # ── WeaponType ─────────────────────────────────────────────────────────
+      - name: 📄 WeaponType.swift
+        run: |
+          cat > ShadowVillage/Sources/WeaponType.swift << 'EOF'
+          import UIKit
+          enum WeaponType: String {
+              case pistol = "Handgun", shotgun = "Shotgun", rifle = "Rifle"
+              var damage:       CGFloat { switch self { case .pistol: return 25; case .shotgun: return 18; case .rifle: return 80 } }
+              var fireRate:     TimeInterval { switch self { case .pistol: return 0.25; case .shotgun: return 0.80; case .rifle: return 0.45 } }
+              var ammoCapacity: Int { switch self { case .pistol: return 15; case .shotgun: return 8; case .rifle: return 10 } }
+              var bulletSpeed:  CGFloat { switch self { case .pistol: return 620; case .shotgun: return 480; case .rifle: return 950 } }
+              var spreadCount:  Int { return self == .shotgun ? 5 : 1 }
+              var spread:       CGFloat { return self == .shotgun ? 0.14 : 0 }
+              var color: UIColor {
+                  switch self {
+                  case .pistol:  return UIColor(red:1.0,green:0.9,blue:0.2,alpha:1)
+                  case .shotgun: return UIColor(red:1.0,green:0.5,blue:0.1,alpha:1)
+                  case .rifle:   return UIColor(red:0.2,green:0.9,blue:1.0,alpha:1)
+                  }
+              }
+          }
+          EOF
+
+      # ── EnemyType ──────────────────────────────────────────────────────────
+      - name: 📄 EnemyType.swift
+        run: |
+          cat > ShadowVillage/Sources/EnemyType.swift << 'EOF'
+          import UIKit
+          enum EnemyType {
+              case villager, brute, fast, cultist, boss
+              var maxHealth: CGFloat { switch self { case .villager:return 100;case .brute:return 320;case .fast:return 55;case .cultist:return 90;case .boss:return 1200 } }
+              var speed:     CGFloat { switch self { case .villager:return 85;case .brute:return 42;case .fast:return 170;case .cultist:return 65;case .boss:return 58 } }
+              var damage:    CGFloat { switch self { case .villager:return 15;case .brute:return 38;case .fast:return 10;case .cultist:return 22;case .boss:return 45 } }
+              var radius:    CGFloat { switch self { case .villager:return 16;case .brute:return 26;case .fast:return 12;case .cultist:return 15;case .boss:return 42 } }
+              var scoreValue: Int    { switch self { case .villager:return 100;case .brute:return 300;case .fast:return 150;case .cultist:return 200;case .boss:return 2500 } }
+              var attackInterval: TimeInterval { return self == .boss ? 0.9 : 1.5 }
+              var physicsCategory: UInt32 { return self == .boss ? PhysicsCategory.boss : PhysicsCategory.enemy }
+              var bodyColor: UIColor {
+                  switch self {
+                  case .villager: return UIColor(red:0.50,green:0.30,blue:0.20,alpha:1)
+                  case .brute:    return UIColor(red:0.42,green:0.14,blue:0.10,alpha:1)
+                  case .fast:     return UIColor(red:0.60,green:0.18,blue:0.52,alpha:1)
+                  case .cultist:  return UIColor(red:0.28,green:0.00,blue:0.32,alpha:1)
+                  case .boss:     return UIColor(red:0.65,green:0.00,blue:0.00,alpha:1)
+                  }
+              }
+          }
+          EOF
+
+      # ── AppDelegate ────────────────────────────────────────────────────────
+      - name: 📄 AppDelegate.swift
+        run: |
+          cat > ShadowVillage/Sources/AppDelegate.swift << 'EOF'
+          import UIKit
+          @main
+          class AppDelegate: UIResponder, UIApplicationDelegate {
+              var window: UIWindow?
+              func application(_ application: UIApplication,
+                               didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey:Any]?) -> Bool {
+                  window = UIWindow(frame: UIScreen.main.bounds)
+                  window?.rootViewController = GameViewController()
+                  window?.makeKeyAndVisible()
+                  return true
+              }
+          }
+          EOF
+
+      # ── GameViewController ─────────────────────────────────────────────────
+      - name: 📄 GameViewController.swift
+        run: |
+          cat > ShadowVillage/Sources/GameViewController.swift << 'EOF'
+          import UIKit, SpriteKit
+          class GameViewController: UIViewController {
+              override func loadView() { self.view = SKView(frame: UIScreen.main.bounds) }
+              override func viewDidLoad() {
+                  super.viewDidLoad()
+                  guard let sv = view as? SKView else { return }
+                  sv.ignoresSiblingOrder = true
+                  sv.preferredFramesPerSecond = 60
+                  let b = UIScreen.main.bounds
+                  let sc = MainMenuScene(size: CGSize(width: max(b.width,b.height), height: min(b.width,b.height)))
+                  sc.scaleMode = .aspectFill
+                  sv.presentScene(sc)
+              }
+              override var prefersStatusBarHidden: Bool { true }
+              override var shouldAutorotate: Bool { true }
+              override var supportedInterfaceOrientations: UIInterfaceOrientationMask { .landscape }
+              override var prefersHomeIndicatorAutoHidden: Bool { true }
+          }
+          EOF
+
+      # ── BulletNode ─────────────────────────────────────────────────────────
+      - name: 📄 Nodes/BulletNode.swift
+        run: |
+          cat > ShadowVillage/Sources/Nodes/BulletNode.swift << 'EOF'
+          import SpriteKit
+          class BulletNode: SKNode {
+              let damage: CGFloat
+              let weapon: WeaponType
+              init(angle: CGFloat, speed: CGFloat, damage: CGFloat, weapon: WeaponType) {
+                  self.damage = damage; self.weapon = weapon
+                  super.init()
+                  let len: CGFloat = weapon == .rifle ? 14 : 7
+                  let wid: CGFloat = weapon == .rifle ? 3 : 4
+                  let sh = SKShapeNode(rectOf: CGSize(width:len,height:wid), cornerRadius: wid/2)
+                  sh.fillColor = weapon.color; sh.strokeColor = .clear; sh.zRotation = angle
+                  addChild(sh)
+                  physicsBody = SKPhysicsBody(rectangleOf: CGSize(width:len,height:wid))
+                  physicsBody?.categoryBitMask    = PhysicsCategory.bullet
+                  physicsBody?.contactTestBitMask = PhysicsCategory.enemy | PhysicsCategory.wall | PhysicsCategory.boss
+                  physicsBody?.collisionBitMask   = PhysicsCategory.none
+                  physicsBody?.affectedByGravity  = false
+                  physicsBody?.linearDamping      = 0
+                  physicsBody?.velocity = CGVector(dx:cos(angle)*speed, dy:sin(angle)*speed)
+                  zPosition = 8
+                  run(SKAction.sequence([SKAction.wait(forDuration:2.2), SKAction.removeFromParent()]))
+              }
+              required init?(coder: NSCoder) { fatalError() }
+          }
+          EOF
+
+      # ── JoystickNode ───────────────────────────────────────────────────────
+      - name: 📄 Nodes/JoystickNode.swift
+        run: |
+          cat > ShadowVillage/Sources/Nodes/JoystickNode.swift << 'EOF'
+          import SpriteKit
+          class JoystickNode: SKNode {
+              private var ring, knob: SKShapeNode!
+              let radius: CGFloat
+              var velocity: CGVector = .zero
+              var angle: CGFloat = 0
+              var isActive = false
+              weak var trackingTouch: UITouch?
+              init(radius: CGFloat) {
+                  self.radius = radius; super.init()
+                  ring = SKShapeNode(circleOfRadius: radius)
+                  ring.fillColor = UIColor(white:1,alpha:0.08); ring.strokeColor = UIColor(white:1,alpha:0.28); ring.lineWidth = 2
+                  addChild(ring)
+                  knob = SKShapeNode(circleOfRadius: radius*0.38)
+                  knob.fillColor = UIColor(white:1,alpha:0.32); knob.strokeColor = UIColor(white:1,alpha:0.5); knob.lineWidth = 1.5
+                  addChild(knob)
+                  alpha = 0.75; zPosition = 100
+              }
+              required init?(coder: NSCoder) { fatalError() }
+              func move(to pt: CGPoint) {
+                  let dx = pt.x-position.x, dy = pt.y-position.y
+                  let dist = sqrt(dx*dx+dy*dy)
+                  let f = dist <= radius ? 1.0 : radius/dist
+                  knob.position = CGPoint(x:dx*f, y:dy*f)
+                  velocity = CGVector(dx:knob.position.x/radius, dy:knob.position.y/radius)
+                  angle = atan2(knob.position.y, knob.position.x)
+                  isActive = dist > radius*0.12
+              }
+              func reset() { knob.position = .zero; velocity = .zero; isActive = false; trackingTouch = nil }
+          }
+          EOF
+
+      # ── PlayerNode ─────────────────────────────────────────────────────────
+      - name: 📄 Nodes/PlayerNode.swift
+        run: |
+          cat > ShadowVillage/Sources/Nodes/PlayerNode.swift << 'EOF'
+          import SpriteKit
+          class PlayerNode: SKNode {
+              var health: CGFloat = 100, maxHealth: CGFloat = 100
+              var isAlive = true, isReloading = false, canShoot = true
+              var score = 0
+              var currentWeapon: WeaponType = .pistol
+              var ammo:      [WeaponType:Int] = [.pistol:15, .shotgun:0, .rifle:0]
+              var totalAmmo: [WeaponType:Int] = [.pistol:60, .shotgun:24, .rifle:30]
+              var facingAngle: CGFloat = 0
+              private var bodyNode: SKShapeNode!
+              private let normalColor = UIColor(red:0.20,green:0.48,blue:0.20,alpha:1)
+              override init() { super.init(); build() }
+              required init?(coder: NSCoder) { fatalError() }
+
+              private func build() {
+                  bodyNode = SKShapeNode(circleOfRadius:18)
+                  bodyNode.fillColor = normalColor; bodyNode.strokeColor = UIColor(red:0.1,green:0.28,blue:0.1,alpha:1); bodyNode.lineWidth = 2
+                  addChild(bodyNode)
+                  let head = SKShapeNode(circleOfRadius:7)
+                  head.fillColor = UIColor(red:0.78,green:0.58,blue:0.40,alpha:1); head.strokeColor = .clear; head.position = CGPoint(x:0,y:6)
+                  addChild(head)
+                  let p = CGMutablePath(); p.move(to:CGPoint(x:12,y:0)); p.addLine(to:CGPoint(x:30,y:0))
+                  let barrel = SKShapeNode(path:p); barrel.strokeColor = UIColor(white:0.25,alpha:1); barrel.lineWidth = 4; barrel.lineCap = .round
+                  addChild(barrel)
+                  physicsBody = SKPhysicsBody(circleOfRadius:18)
+                  physicsBody?.categoryBitMask    = PhysicsCategory.player
+                  physicsBody?.contactTestBitMask = PhysicsCategory.enemy | PhysicsCategory.item | PhysicsCategory.boss
+                  physicsBody?.collisionBitMask   = PhysicsCategory.wall
+                  physicsBody?.allowsRotation = false; physicsBody?.restitution = 0
+                  zPosition = 10
+              }
+
+              func setFacing(angle a: CGFloat) { facingAngle = a; zRotation = a }
+
+              func shoot(in scene: SKScene) {
+                  guard canShoot, !isReloading else { return }
+                  guard let cur = ammo[currentWeapon], cur > 0 else { reloadWeapon(); return }
+                  ammo[currentWeapon]! -= 1; canShoot = false
+                  run(SKAction.sequence([SKAction.wait(forDuration:currentWeapon.fireRate), SKAction.run { [weak self] in self?.canShoot = true }]))
+                  let fp = CGPoint(x:position.x+cos(facingAngle)*32, y:position.y+sin(facingAngle)*32)
+                  let flash = SKShapeNode(circleOfRadius:9)
+                  flash.fillColor = UIColor(red:1,green:0.85,blue:0.25,alpha:1); flash.strokeColor = .clear; flash.position = fp; flash.zPosition = 15
+                  scene.addChild(flash)
+                  flash.run(SKAction.sequence([SKAction.group([SKAction.scale(to:1.6,duration:0.04),SKAction.fadeOut(withDuration:0.07)]),SKAction.removeFromParent()]))
+                  let rc: CGFloat = 3
+                  run(SKAction.sequence([SKAction.move(by:CGVector(dx:-cos(facingAngle)*rc,dy:-sin(facingAngle)*rc),duration:0.04),
+                                         SKAction.move(by:CGVector(dx: cos(facingAngle)*rc,dy: sin(facingAngle)*rc),duration:0.06)]))
+                  let n = currentWeapon.spreadCount, sp = currentWeapon.spread
+                  let start = -sp * CGFloat(n/2)
+                  for i in 0..<n {
+                      let b = BulletNode(angle:facingAngle+start+sp*CGFloat(i), speed:currentWeapon.bulletSpeed, damage:currentWeapon.damage, weapon:currentWeapon)
+                      b.position = fp; scene.addChild(b)
+                  }
+                  if ammo[currentWeapon]! == 0 { reloadWeapon() }
+              }
+
+              func reloadWeapon() {
+                  guard !isReloading, let tot = totalAmmo[currentWeapon], tot > 0,
+                        let cur = ammo[currentWeapon], cur < currentWeapon.ammoCapacity else { return }
+                  isReloading = true; canShoot = false
+                  let t: TimeInterval = currentWeapon == .shotgun ? 1.6 : 1.1
+                  run(SKAction.sequence([SKAction.wait(forDuration:t), SKAction.run { [weak self] in
+                      guard let s = self else { return }
+                      let need = s.currentWeapon.ammoCapacity - (s.ammo[s.currentWeapon] ?? 0)
+                      let load = min(need, s.totalAmmo[s.currentWeapon] ?? 0)
+                      s.ammo[s.currentWeapon]! += load; s.totalAmmo[s.currentWeapon]! -= load
+                      s.isReloading = false; s.canShoot = true
+                  }]))
+              }
+
+              func takeDamage(_ amount: CGFloat) {
+                  guard isAlive else { return }; health = max(0, health-amount)
+                  run(SKAction.sequence([SKAction.run{[weak self] in self?.bodyNode.fillColor = .red},
+                                         SKAction.wait(forDuration:0.15),
+                                         SKAction.run{[weak self] in self?.bodyNode.fillColor = self?.normalColor ?? .green}]))
+                  if health <= 0 { isAlive = false; physicsBody = nil
+                      run(SKAction.sequence([SKAction.group([SKAction.rotate(byAngle:.pi*2,duration:0.45),SKAction.fadeOut(withDuration:0.45)]),SKAction.removeFromParent()]))
+                  }
+              }
+
+              func heal(_ amount: CGFloat) { health = min(maxHealth, health+amount) }
+
+              func nextWeapon() {
+                  let all: [WeaponType] = [.pistol,.shotgun,.rifle]
+                  guard let idx = all.firstIndex(of: currentWeapon) else { return }
+                  for i in 1...3 {
+                      let next = all[(idx+i) % all.count]
+                      if (ammo[next] ?? 0) + (totalAmmo[next] ?? 0) > 0 { currentWeapon = next; isReloading = false; canShoot = true; removeAllActions(); return }
+                  }
+              }
+              func addAmmo(for w: WeaponType, amount: Int) { totalAmmo[w, default:0] += amount }
+              func unlockWeapon(_ w: WeaponType) { if (ammo[w] ?? 0) == 0 { ammo[w] = w.ammoCapacity } }
+          }
+          EOF
+
+      # ── EnemyNode ──────────────────────────────────────────────────────────
+      - name: 📄 Nodes/EnemyNode.swift
+        run: |
+          cat > ShadowVillage/Sources/Nodes/EnemyNode.swift << 'EOF'
+          import SpriteKit
+          class EnemyNode: SKNode {
+              let enemyType: EnemyType
+              var health: CGFloat
+              var isAlive = true
+              var lastAttackTime: TimeInterval = 0
+              private var bodyNode, healthBar, healthBarBg: SKShapeNode!
+
+              init(type: EnemyType) {
+                  self.enemyType = type; self.health = type.maxHealth; super.init(); build()
+              }
+              required init?(coder: NSCoder) { fatalError() }
+
+              private func build() {
+                  let r = enemyType.radius
+                  bodyNode = SKShapeNode(circleOfRadius:r)
+                  bodyNode.fillColor = enemyType.bodyColor; bodyNode.strokeColor = UIColor(white:0.18,alpha:1); bodyNode.lineWidth = 2
+                  addChild(bodyNode)
+                  for xm: CGFloat in [-1,1] {
+                      let eye = SKShapeNode(circleOfRadius:r*0.17)
+                      eye.fillColor = UIColor(red:0.95,green:0.08,blue:0.08,alpha:1); eye.strokeColor = .clear
+                      eye.position = CGPoint(x:xm*r*0.33, y:r*0.22); addChild(eye)
+                  }
+                  if enemyType == .boss {
+                      let cp = CGMutablePath()
+                      cp.move(to:CGPoint(x:-22,y:r)); cp.addLine(to:CGPoint(x:-11,y:r+18))
+                      cp.addLine(to:CGPoint(x:0,y:r+9)); cp.addLine(to:CGPoint(x:11,y:r+18))
+                      cp.addLine(to:CGPoint(x:22,y:r))
+                      let crown = SKShapeNode(path:cp)
+                      crown.strokeColor = UIColor(red:1,green:0.8,blue:0,alpha:1); crown.lineWidth = 3; crown.lineCap = .round
+                      addChild(crown)
+                      bodyNode.run(SKAction.repeatForever(SKAction.sequence([SKAction.scale(to:1.06,duration:0.5),SKAction.scale(to:0.94,duration:0.5)])))
+                  }
+                  let bw: CGFloat = r*3
+                  healthBarBg = SKShapeNode(rectOf:CGSize(width:bw,height:5),cornerRadius:2)
+                  healthBarBg.fillColor = UIColor(red:0.28,green:0,blue:0,alpha:0.85); healthBarBg.strokeColor = .clear
+                  healthBarBg.position = CGPoint(x:0,y:r+9); addChild(healthBarBg)
+                  healthBar = SKShapeNode(rectOf:CGSize(width:bw,height:5),cornerRadius:2)
+                  healthBar.fillColor = UIColor(red:0.8,green:0.08,blue:0.08,alpha:1); healthBar.strokeColor = .clear
+                  healthBar.position = CGPoint(x:0,y:r+9); addChild(healthBar)
+                  physicsBody = SKPhysicsBody(circleOfRadius:r)
+                  physicsBody?.categoryBitMask    = enemyType.physicsCategory
+                  physicsBody?.contactTestBitMask = PhysicsCategory.bullet | PhysicsCategory.player
+                  physicsBody?.collisionBitMask   = PhysicsCategory.wall | PhysicsCategory.player
+                  physicsBody?.allowsRotation = false; physicsBody?.restitution = 0
+                  zPosition = 9
+              }
+
+              private func refreshBar() {
+                  healthBar.removeFromParent()
+                  let ratio = max(0.001, health/enemyType.maxHealth)
+                  let bw = enemyType.radius*3
+                  let nb = SKShapeNode(rectOf:CGSize(width:bw*ratio,height:5),cornerRadius:2)
+                  nb.fillColor = ratio > 0.5 ? UIColor(red:0.8,green:0.08,blue:0.08,alpha:1) : UIColor(red:1,green:0.5,blue:0,alpha:1)
+                  nb.strokeColor = .clear
+                  nb.position = CGPoint(x:-(bw*(1-ratio))/2, y:enemyType.radius+9)
+                  healthBar = nb; addChild(healthBar)
+              }
+
+              func takeDamage(_ amount: CGFloat) {
+                  guard isAlive else { return }; health -= amount; refreshBar()
+                  spawnBlood(5)
+                  run(SKAction.sequence([SKAction.run{[weak self] in self?.bodyNode.fillColor = .white},
+                                         SKAction.wait(forDuration:0.07),
+                                         SKAction.run{[weak self] in self?.bodyNode.fillColor = self?.enemyType.bodyColor ?? .red}]))
+                  if health <= 0 { isAlive = false; die() }
+              }
+
+              private func spawnBlood(_ n: Int) {
+                  for _ in 0..<n {
+                      let p = SKShapeNode(circleOfRadius:CGFloat.random(in:2...5))
+                      p.fillColor = UIColor(red:0.68,green:0,blue:0,alpha:0.9); p.strokeColor = .clear
+                      p.position = CGPoint(x:CGFloat.random(in:-10...10),y:CGFloat.random(in:-10...10)); p.zPosition = 13
+                      parent?.addChild(p)
+                      let a = CGFloat.random(in:0...CGFloat.pi*2), d = CGFloat.random(in:22...55)
+                      p.run(SKAction.sequence([SKAction.group([SKAction.move(by:CGVector(dx:cos(a)*d,dy:sin(a)*d),duration:0.28),
+                                                               SKAction.fadeOut(withDuration:0.28)]),SKAction.removeFromParent()]))
+                  }
+              }
+
+              private func die() {
+                  removeAllActions(); physicsBody = nil
+                  let pool = SKShapeNode(ellipseOf:CGSize(width:enemyType.radius*3.2,height:enemyType.radius*2))
+                  pool.fillColor = UIColor(red:0.38,green:0,blue:0,alpha:0.7); pool.strokeColor = .clear
+                  pool.position = position; pool.zPosition = 2; parent?.addChild(pool)
+                  run(SKAction.sequence([SKAction.group([SKAction.rotate(byAngle:.pi*2,duration:0.38),
+                                                         SKAction.scale(to:0.05,duration:0.38),
+                                                         SKAction.fadeOut(withDuration:0.38)]),SKAction.removeFromParent()]))
+              }
+
+              func moveToward(target: CGPoint) {
+                  guard isAlive else { return }
+                  let dx = target.x-position.x, dy = target.y-position.y
+                  let dist = sqrt(dx*dx+dy*dy)
+                  if dist > 6 { physicsBody?.velocity = CGVector(dx:dx/dist*enemyType.speed, dy:dy/dist*enemyType.speed); zRotation = atan2(dy,dx) }
+                  else { physicsBody?.velocity = .zero }
+              }
+
+              func canAttack(at t: TimeInterval) -> Bool { t - lastAttackTime >= enemyType.attackInterval }
+          }
+          EOF
+
+      # ── HUDNode ────────────────────────────────────────────────────────────
+      - name: 📄 Nodes/HUDNode.swift
+        run: |
+          cat > ShadowVillage/Sources/Nodes/HUDNode.swift << 'EOF'
+          import SpriteKit
+          class HUDNode: SKNode {
+              private var healthBar, healthBarBg: SKShapeNode!
+              private var ammoLabel, weaponLabel, scoreLabel, waveLabel, reloadLabel: SKLabelNode!
+              private var crosshair: SKShapeNode!
+              let barW: CGFloat = 190
+              override init() { super.init(); zPosition = 200 }
+              required init?(coder: NSCoder) { fatalError() }
+
+              func setup(size s: CGSize) {
+                  let l = -s.width/2, t = s.height/2, r = s.width/2, b = -s.height/2
+                  let hpBg = SKShapeNode(rectOf:CGSize(width:barW+4,height:22),cornerRadius:4)
+                  hpBg.fillColor = UIColor(white:0,alpha:0.5); hpBg.strokeColor = UIColor(white:1,alpha:0.22)
+                  hpBg.position = CGPoint(x:l+barW/2+24,y:t-34); addChild(hpBg)
+                  healthBarBg = SKShapeNode(rectOf:CGSize(width:barW,height:16),cornerRadius:3)
+                  healthBarBg.fillColor = UIColor(red:0.28,green:0,blue:0,alpha:1); healthBarBg.strokeColor = .clear
+                  healthBarBg.position = hpBg.position; addChild(healthBarBg)
+                  healthBar = SKShapeNode(rectOf:CGSize(width:barW,height:16),cornerRadius:3)
+                  healthBar.fillColor = UIColor(red:0.1,green:0.82,blue:0.1,alpha:1); healthBar.strokeColor = .clear
+                  healthBar.position = hpBg.position; addChild(healthBar)
+                  let icon = lbl("❤️",sz:13,pos:CGPoint(x:l+13,y:t-40)); addChild(icon)
+                  ammoLabel  = lbl("15/60",sz:22,font:"Courier-Bold",pos:CGPoint(x:r-22,y:b+78),align:.right); addChild(ammoLabel)
+                  weaponLabel = lbl("[Handgun]",sz:13,pos:CGPoint(x:r-22,y:b+57),color:UIColor(red:1,green:0.8,blue:0.2,alpha:1),align:.right); addChild(weaponLabel)
+                  reloadLabel = lbl("RELOADING...",sz:18,font:"Courier-Bold",pos:CGPoint(x:r-22,y:b+100),color:UIColor(red:1,green:0.5,blue:0,alpha:1),align:.right); reloadLabel.isHidden = true; addChild(reloadLabel)
+                  scoreLabel = lbl("SCORE: 0",sz:17,font:"Courier-Bold",pos:CGPoint(x:0,y:t-34),color:UIColor(red:1,green:0.9,blue:0.2,alpha:1)); addChild(scoreLabel)
+                  waveLabel = lbl("WAVE 1",sz:14,font:"Courier-Bold",pos:CGPoint(x:0,y:t-56),color:UIColor(red:0.9,green:0.2,blue:0.2,alpha:1)); addChild(waveLabel)
+                  let cs: CGFloat = 18, cp = CGMutablePath()
+                  cp.move(to:CGPoint(x:-cs,y:0)); cp.addLine(to:CGPoint(x:-5,y:0))
+                  cp.move(to:CGPoint(x:5,y:0));   cp.addLine(to:CGPoint(x:cs,y:0))
+                  cp.move(to:CGPoint(x:0,y:-cs)); cp.addLine(to:CGPoint(x:0,y:-5))
+                  cp.move(to:CGPoint(x:0,y:5));   cp.addLine(to:CGPoint(x:0,y:cs))
+                  crosshair = SKShapeNode(path:cp)
+                  crosshair.strokeColor = UIColor(red:1,green:0.15,blue:0.15,alpha:0.85); crosshair.lineWidth = 1.5; crosshair.isHidden = true
+                  addChild(crosshair)
+                  let swapN = SKNode(); swapN.name = "swap_btn"; swapN.position = CGPoint(x:r-45,y:b+34); swapN.zPosition = 210
+                  let sbg = SKShapeNode(rectOf:CGSize(width:62,height:28),cornerRadius:6)
+                  sbg.fillColor = UIColor(red:0.18,green:0.18,blue:0.42,alpha:0.85); sbg.strokeColor = UIColor(white:0.55,alpha:0.45); sbg.lineWidth = 1.2; sbg.name = "swap_btn"
+                  swapN.addChild(sbg)
+                  let sl = lbl("SWAP",sz:11,font:"Courier-Bold",pos:.zero); sl.name = "swap_btn"; swapN.addChild(sl); addChild(swapN)
+              }
+
+              func update(health: CGFloat, maxHealth: CGFloat, ammo: Int, totalAmmo: Int,
+                          weapon: WeaponType, score: Int, wave: Int, isReloading: Bool) {
+                  let ratio = max(0, health/maxHealth), newW = max(1, barW*ratio)
+                  healthBar.removeFromParent()
+                  let nb = SKShapeNode(rectOf:CGSize(width:newW,height:16),cornerRadius:3)
+                  nb.fillColor = ratio > 0.5 ? UIColor(red:0.10,green:0.82,blue:0.10,alpha:1) : ratio > 0.25 ? UIColor(red:0.90,green:0.60,blue:0,alpha:1) : UIColor(red:0.90,green:0.10,blue:0.10,alpha:1)
+                  nb.strokeColor = .clear; nb.position = CGPoint(x:healthBarBg.position.x-(barW-newW)/2, y:healthBarBg.position.y)
+                  healthBar = nb; addChild(healthBar)
+                  ammoLabel.text = "\(ammo)/\(totalAmmo)"; ammoLabel.fontColor = ammo == 0 ? .red : ammo <= 3 ? .orange : .white
+                  weaponLabel.text = "[\(weapon.rawValue)]"; weaponLabel.fontColor = weapon.color
+                  scoreLabel.text = "SCORE: \(score)"; waveLabel.text = "WAVE \(wave)"; reloadLabel.isHidden = !isReloading
+              }
+
+              func showCrosshair(at pos: CGPoint) { crosshair.position = pos; crosshair.isHidden = false }
+              func hideCrosshair() { crosshair.isHidden = true }
+
+              func showMessage(_ text: String, color: UIColor = .white, duration: TimeInterval = 2.0) {
+                  let l = SKLabelNode(fontNamed:"Courier-Bold"); l.text = text; l.fontSize = 26; l.fontColor = color
+                  l.position = CGPoint(x:0,y:40); l.zPosition = 300; l.setScale(0.4); l.alpha = 0; addChild(l)
+                  l.run(SKAction.sequence([SKAction.group([SKAction.scale(to:1.15,duration:0.2),SKAction.fadeIn(withDuration:0.2)]),
+                                            SKAction.scale(to:1.0,duration:0.1), SKAction.wait(forDuration:duration-0.5),
+                                            SKAction.group([SKAction.fadeOut(withDuration:0.3),SKAction.moveBy(x:0,y:28,duration:0.3)]),
+                                            SKAction.removeFromParent()]))
+              }
+
+              private func lbl(_ t: String, sz: CGFloat, font: String = "Courier-Bold", pos: CGPoint,
+                               color: UIColor = .white, align: SKLabelHorizontalAlignmentMode = .center) -> SKLabelNode {
+                  let l = SKLabelNode(fontNamed:font); l.text = t; l.fontSize = sz; l.fontColor = color
+                  l.horizontalAlignmentMode = align; l.verticalAlignmentMode = .center; l.position = pos; return l
+              }
+          }
+          EOF
+
+      # ── MainMenuScene ──────────────────────────────────────────────────────
+      - name: 📄 Scenes/MainMenuScene.swift
+        run: |
+          cat > ShadowVillage/Sources/Scenes/MainMenuScene.swift << 'EOF'
+          import SpriteKit
+          class MainMenuScene: SKScene {
+              override func didMove(to view: SKView) {
+                  backgroundColor = UIColor(red:0.04,green:0.03,blue:0.02,alpha:1)
+                  buildStars(); buildVillage(); buildMoon(); buildFog(); buildTitle(); buildMenu()
+              }
+
+              private func buildStars() {
+                  for _ in 0..<90 {
+                      let s = SKShapeNode(circleOfRadius:CGFloat.random(in:0.5...2))
+                      s.fillColor = UIColor(white:CGFloat.random(in:0.4...0.9),alpha:CGFloat.random(in:0.35...0.85)); s.strokeColor = .clear
+                      s.position = CGPoint(x:CGFloat.random(in:0...size.width),y:CGFloat.random(in:0...size.height)); addChild(s)
+                      s.run(SKAction.repeatForever(SKAction.sequence([
+                          SKAction.fadeAlpha(to:CGFloat.random(in:0.08...0.35),duration:CGFloat.random(in:0.6...2.2)),
+                          SKAction.fadeAlpha(to:CGFloat.random(in:0.55...1.0),duration:CGFloat.random(in:0.6...2.2))])))
+                  }
+              }
+
+              private func buildVillage() {
+                  let rc = UIColor(red:0.07,green:0.05,blue:0.03,alpha:1), wc = UIColor(red:0.09,green:0.07,blue:0.04,alpha:1)
+                  let pos: [(CGFloat,CGFloat,CGFloat)] = [(0.08,90,100),(0.18,70,130),(0.30,110,90),(0.44,80,115),(0.56,95,80),(0.68,75,140),(0.80,100,95),(0.92,65,110)]
+                  for (xf,w,h) in pos {
+                      let wall = SKShapeNode(rectOf:CGSize(width:w,height:h))
+                      wall.fillColor = wc; wall.strokeColor = .clear; wall.position = CGPoint(x:size.width*xf,y:h/2); wall.zPosition = 1; addChild(wall)
+                      let rp = CGMutablePath(), rh = CGFloat.random(in:20...48)
+                      rp.move(to:CGPoint(x:-(w/2+4),y:0)); rp.addLine(to:CGPoint(x:0,y:rh)); rp.addLine(to:CGPoint(x:w/2+4,y:0)); rp.closeSubpath()
+                      let roof = SKShapeNode(path:rp); roof.fillColor = rc; roof.strokeColor = .clear
+                      roof.position = CGPoint(x:size.width*xf,y:h); roof.zPosition = 2; addChild(roof)
+                      let win = SKShapeNode(rectOf:CGSize(width:12,height:16),cornerRadius:2)
+                      win.fillColor = UIColor(red:0.85,green:0.72,blue:0.30,alpha:0.4); win.strokeColor = .clear
+                      win.position = CGPoint(x:size.width*xf,y:CGFloat.random(in:20...h*0.6)); win.zPosition = 3; addChild(win)
+                      win.run(SKAction.repeatForever(SKAction.sequence([
+                          SKAction.fadeAlpha(to:0.15,duration:CGFloat.random(in:0.08...0.3)),
+                          SKAction.fadeAlpha(to:CGFloat.random(in:0.3...0.6),duration:CGFloat.random(in:0.06...0.25))])))
+                  }
+              }
+
+              private func buildMoon() {
+                  let moon = SKShapeNode(circleOfRadius:46)
+                  moon.fillColor = UIColor(red:0.86,green:0.83,blue:0.70,alpha:1)
+                  moon.strokeColor = UIColor(red:1,green:0.96,blue:0.80,alpha:0.30); moon.lineWidth = 4
+                  moon.position = CGPoint(x:size.width*0.76,y:size.height*0.78); moon.zPosition = 0; addChild(moon)
+                  let glow = SKShapeNode(circleOfRadius:70)
+                  glow.fillColor = UIColor(red:1,green:0.95,blue:0.75,alpha:0.06); glow.strokeColor = .clear
+                  glow.position = moon.position; addChild(glow)
+                  glow.run(SKAction.repeatForever(SKAction.sequence([SKAction.fadeAlpha(to:0.02,duration:1.8),SKAction.fadeAlpha(to:0.10,duration:1.8)])))
+                  // Bats
+                  for i in 0..<4 {
+                      let bat = SKShapeNode(circleOfRadius:4)
+                      bat.fillColor = UIColor(white:0.05,alpha:1); bat.strokeColor = .clear
+                      bat.position = CGPoint(x:size.width*0.76 + CGFloat(i*20-30), y:size.height*0.78 + 60 + CGFloat(i*15)); bat.zPosition = 5
+                      addChild(bat)
+                      bat.run(SKAction.repeatForever(SKAction.sequence([
+                          SKAction.moveBy(x:CGFloat.random(in:-40...40),y:CGFloat.random(in:-15...25),duration:1.2),
+                          SKAction.moveBy(x:CGFloat.random(in:-40...40),y:CGFloat.random(in:-25...15),duration:1.2)])))
+                  }
+              }
+
+              private func buildFog() {
+                  for _ in 0..<8 {
+                      let fog = SKShapeNode(ellipseOf:CGSize(width:CGFloat.random(in:180...340),height:CGFloat.random(in:30...70)))
+                      fog.fillColor = UIColor(red:0.55,green:0.55,blue:0.65,alpha:CGFloat.random(in:0.04...0.12))
+                      fog.strokeColor = .clear
+                      fog.position = CGPoint(x:CGFloat.random(in:0...size.width),y:CGFloat.random(in:20...140)); fog.zPosition = 4
+                      addChild(fog)
+                      let dur = TimeInterval(CGFloat.random(in:6...14))
+                      fog.run(SKAction.repeatForever(SKAction.sequence([
+                          SKAction.moveBy(x:CGFloat.random(in:-80...80),y:0,duration:dur),
+                          SKAction.moveBy(x:CGFloat.random(in:-80...80),y:0,duration:dur)])))
+                  }
+              }
+
+              private func buildTitle() {
+                  let shadow = SKLabelNode(fontNamed:"Courier-Bold")
+                  shadow.text = "SHADOW VILLAGE"; shadow.fontSize = 52; shadow.fontColor = UIColor(white:0,alpha:0.7)
+                  shadow.position = CGPoint(x:size.width/2+3,y:size.height*0.72-3); shadow.zPosition = 9; addChild(shadow)
+                  let title = SKLabelNode(fontNamed:"Courier-Bold")
+                  title.text = "SHADOW VILLAGE"; title.fontSize = 52; title.fontColor = UIColor(red:0.9,green:0.08,blue:0.08,alpha:1)
+                  title.position = CGPoint(x:size.width/2,y:size.height*0.72); title.zPosition = 10; addChild(title)
+                  title.run(SKAction.repeatForever(SKAction.sequence([SKAction.fadeAlpha(to:0.75,duration:1.4),SKAction.fadeAlpha(to:1.0,duration:1.4)])))
+                  let sub = SKLabelNode(fontNamed:"Courier"); sub.text = "S U R V I V A L  H O R R O R"; sub.fontSize = 16
+                  sub.fontColor = UIColor(red:0.7,green:0.5,blue:0.2,alpha:1)
+                  sub.position = CGPoint(x:size.width/2,y:size.height*0.72-42); sub.zPosition = 10; addChild(sub)
+              }
+
+              private func buildMenu() {
+                  let items: [(String,String,UIColor)] = [
+                      ("▶  START GAME","start",UIColor(red:0.55,green:0,blue:0,alpha:0.85)),
+                      ("⚙  HOW TO PLAY","how",UIColor(red:0.18,green:0.10,blue:0.04,alpha:0.85)),
+                      ("✕  QUIT","quit",UIColor(red:0.12,green:0.04,blue:0.04,alpha:0.85))
+                  ]
+                  for (i,(title,name,color)) in items.enumerated() {
+                      let yp = size.height*0.50 - CGFloat(i)*72
+                      let node = SKNode(); node.name = name; node.position = CGPoint(x:size.width/2,y:yp); node.zPosition = 20
+                      let bg = SKShapeNode(rectOf:CGSize(width:240,height:52),cornerRadius:10)
+                      bg.fillColor = color; bg.strokeColor = UIColor(red:0.75,green:0.15,blue:0.15,alpha:0.8); bg.lineWidth = 2; bg.name = name
+                      node.addChild(bg)
+                      let lbl = SKLabelNode(fontNamed:"Courier-Bold"); lbl.text = title; lbl.fontSize = 21; lbl.fontColor = .white
+                      lbl.verticalAlignmentMode = .center; lbl.name = name; node.addChild(lbl)
+                      node.alpha = 0; addChild(node)
+                      node.run(SKAction.sequence([SKAction.wait(forDuration:0.3+Double(i)*0.15),SKAction.fadeIn(withDuration:0.4)]))
+                  }
+              }
+
+              override func touchesBegan(_ touches: Set<UITouch>, with e: UIEvent?) {
+                  guard let t = touches.first else { return }
+                  for n in nodes(at:t.location(in:self)) {
+                      let nm = n.name ?? n.parent?.name ?? ""
+                      if nm == "start" { let g = GameScene(size:size); g.scaleMode = .aspectFill; view?.presentScene(g,transition:.fade(withDuration:1.2)); return }
+                      if nm == "how" { showHelp(); return }
+                      if nm == "quit" { UIApplication.shared.perform(#selector(NSXPCConnection.suspend)); return }
+                  }
+              }
+
+              private func showHelp() {
+                  let ov = SKShapeNode(rectOf:size); ov.fillColor = UIColor(white:0,alpha:0.88); ov.strokeColor = .clear
+                  ov.position = CGPoint(x:size.width/2,y:size.height/2); ov.zPosition = 50; ov.name = "overlay"; addChild(ov)
+                  let lines = ["HOW TO PLAY","","LEFT JOYSTICK – Move","RIGHT SIDE TAP – Shoot","SHOOT BUTTON – Fire","SWAP button – Change weapon","","Survive the waves!","Kill the boss to win!","","TAP to close"]
+                  for (i,line) in lines.enumerated() {
+                      let l = SKLabelNode(fontNamed: i==0 ? "Courier-Bold" : "Courier")
+                      l.text = line; l.fontSize = i==0 ? 24 : 16
+                      l.fontColor = i==0 ? UIColor(red:1,green:0.8,blue:0.2,alpha:1) : .white
+                      l.position = CGPoint(x:size.width/2,y:size.height*0.82-CGFloat(i)*30); l.zPosition = 51; l.name = "overlay"; addChild(l)
+                  }
+              }
+
+              override func touchesEnded(_ touches: Set<UITouch>, with e: UIEvent?) {
+                  if nodes(at:touches.first?.location(in:self) ?? .zero).contains(where:{$0.name=="overlay"}) {
+                      children.filter{$0.name=="overlay"}.forEach{$0.removeFromParent()}
+                  }
+              }
+          }
+          EOF
+
+      # ── GameOverScene ──────────────────────────────────────────────────────
+      - name: 📄 Scenes/GameOverScene.swift
+        run: |
+          cat > ShadowVillage/Sources/Scenes/GameOverScene.swift << 'EOF'
+          import SpriteKit
+          class GameOverScene: SKScene {
+              let finalScore, finalWave: Int
+              let isVictory: Bool
+              init(size: CGSize, score: Int, wave: Int, isVictory: Bool = false) {
+                  self.finalScore = score; self.finalWave = wave; self.isVictory = isVictory; super.init(size:size)
+              }
+              required init?(coder: NSCoder) { fatalError() }
+
+              override func didMove(to view: SKView) {
+                  backgroundColor = UIColor(red:0.04,green:0.0,blue:0.0,alpha:1)
+                  if !isVictory {
+                      for _ in 0..<22 {
+                          let d = SKShapeNode(rectOf:CGSize(width:CGFloat.random(in:3...8),height:CGFloat.random(in:18...60)),cornerRadius:3)
+                          d.fillColor = UIColor(red:0.4,green:0,blue:0,alpha:CGFloat.random(in:0.3...0.7)); d.strokeColor = .clear
+                          d.position = CGPoint(x:CGFloat.random(in:0...size.width),y:CGFloat.random(in:0...size.height)); addChild(d)
+                      }
+                  } else {
+                      for _ in 0..<40 {
+                          let sp = SKShapeNode(circleOfRadius:CGFloat.random(in:2...6))
+                          sp.fillColor = UIColor(hue:CGFloat.random(in:0...1),saturation:0.8,brightness:1,alpha:0.7); sp.strokeColor = .clear
+                          sp.position = CGPoint(x:CGFloat.random(in:0...size.width),y:CGFloat.random(in:0...size.height)); addChild(sp)
+                          sp.run(SKAction.repeatForever(SKAction.sequence([SKAction.fadeAlpha(to:0.1,duration:CGFloat.random(in:0.4...1.2)),SKAction.fadeAlpha(to:0.9,duration:CGFloat.random(in:0.4...1.2))])))
+                      }
+                  }
+                  let tt = isVictory ? "MISSION COMPLETE" : "YOU DIED"
+                  let tc = isVictory ? UIColor(red:1,green:0.82,blue:0,alpha:1) : UIColor(red:0.95,green:0,blue:0,alpha:1)
+                  let title = lbl(tt,font:"Courier-Bold",sz:46,color:tc,pos:CGPoint(x:size.width/2,y:size.height*0.73))
+                  title.setScale(0.25); addChild(title)
+                  title.run(SKAction.sequence([SKAction.scale(to:1.12,duration:0.38),SKAction.scale(to:1.0,duration:0.12)]))
+                  let rank: String
+                  switch finalScore { case ..<1000:rank="D";case ..<2500:rank="C";case ..<5000:rank="B";case ..<10000:rank="A";default:rank="S" }
+                  for (i,s) in ["WAVES SURVIVED : \(finalWave)","FINAL SCORE    : \(finalScore)","RANK           : \(rank)"].enumerated() {
+                      let l = lbl(s,font:"Courier",sz:20,color:UIColor(white:0.85,alpha:1),pos:CGPoint(x:size.width/2,y:size.height*0.57-CGFloat(i)*36))
+                      l.alpha = 0; l.run(SKAction.sequence([SKAction.wait(forDuration:0.5+Double(i)*0.28),SKAction.fadeIn(withDuration:0.4)])); addChild(l)
+                  }
+                  for (i,(t,n,fc,sc)) in [("▶  PLAY AGAIN","play_again",UIColor(red:0.55,green:0,blue:0,alpha:0.85),UIColor(red:0.9,green:0.1,blue:0.1,alpha:1)),
+                                           ("MAIN MENU","main_menu",UIColor(red:0.12,green:0.04,blue:0.04,alpha:0.85),UIColor(red:0.4,green:0.2,blue:0.2,alpha:0.8))].enumerated() {
+                      let yp = size.height*0.35 - CGFloat(i)*60
+                      let node = SKNode(); node.name = n; node.position = CGPoint(x:size.width/2,y:yp); node.zPosition = 20; node.alpha = 0
+                      let bg = SKShapeNode(rectOf:CGSize(width:220,height:48),cornerRadius:10); bg.fillColor = fc; bg.strokeColor = sc; bg.lineWidth = 2; bg.name = n; node.addChild(bg)
+                      let lnode = SKLabelNode(fontNamed:"Courier-Bold"); lnode.text = t; lnode.fontSize = 20; lnode.fontColor = .white; lnode.verticalAlignmentMode = .center; lnode.name = n; node.addChild(lnode)
+                      addChild(node); node.run(SKAction.sequence([SKAction.wait(forDuration:1.4+Double(i)*0.5),SKAction.fadeIn(withDuration:0.5)]))
+                  }
+              }
+
+              private func lbl(_ t: String, font: String, sz: CGFloat, color: UIColor, pos: CGPoint) -> SKLabelNode {
+                  let l = SKLabelNode(fontNamed:font); l.text = t; l.fontSize = sz; l.fontColor = color
+                  l.position = pos; l.horizontalAlignmentMode = .center; l.verticalAlignmentMode = .center; return l
+              }
+
+              override func touchesBegan(_ touches: Set<UITouch>, with e: UIEvent?) {
+                  guard let t = touches.first else { return }
+                  for n in nodes(at:t.location(in:self)) {
+                      let nm = n.name ?? n.parent?.name ?? ""
+                      if nm == "play_again" { let g = GameScene(size:size); g.scaleMode = .aspectFill; view?.presentScene(g,transition:.fade(withDuration:1.0)); return }
+                      if nm == "main_menu"  { let m = MainMenuScene(size:size); m.scaleMode = .aspectFill; view?.presentScene(m,transition:.fade(withDuration:1.0)); return }
+                  }
+              }
+          }
+          EOF
+
+      # ── GameScene (MAIN GAME) ──────────────────────────────────────────────
+      - name: 📄 Scenes/GameScene.swift
+        run: |
+          cat > ShadowVillage/Sources/Scenes/GameScene.swift << 'EOF'
+          import SpriteKit
+
+          class GameScene: SKScene, SKPhysicsContactDelegate {
+
+              // MARK: – State
+              private var player:    PlayerNode!
+              private var hud:       HUDNode!
+              private var moveJS:    JoystickNode!
+              private var aimJS:     JoystickNode!
+              private var enemies:   [EnemyNode] = []
+              private var wave:      Int = 0
+              private var isPaused_: Bool = false
+
+              private let worldNode = SKNode()
+              private let mapW: CGFloat = 1800, mapH: CGFloat = 1400
+
+              private var lastUpdate: TimeInterval = 0
+              private var waveTimer:  TimeInterval = 0
+              private var waveDelay:  TimeInterval = 4.0
+              private var waveActive: Bool = false
+              private var bossSpawned: Bool = false
+              private var gameOver:   Bool = false
+
+              private var shootTouchID: UITouch.Phase? = nil
+              private var aimTouch: UITouch? = nil
+              private var isAutoShooting = false
+
+              // MARK: – Setup
+              override func didMove(to view: SKView) {
+                  physicsWorld.gravity = .zero
+                  physicsWorld.contactDelegate = self
+                  backgroundColor = UIColor(red:0.06,green:0.05,blue:0.02,alpha:1)
+                  addChild(worldNode)
+                  buildMap()
+                  spawnPlayer()
+                  setupCamera()
+                  setupHUD()
+                  setupJoysticks()
+                  buildAmbience()
+                  waveTimer = waveDelay
+                  hud.showMessage("WAVE 1 INCOMING!", color: UIColor(red:1,green:0.2,blue:0.2,alpha:1), duration: 2.5)
+              }
+
+              // MARK: – Map
+              private func buildMap() {
+                  // Ground tiles
+                  let tileColors: [UIColor] = [
+                      UIColor(red:0.12,green:0.10,blue:0.06,alpha:1),
+                      UIColor(red:0.10,green:0.09,blue:0.05,alpha:1),
+                      UIColor(red:0.14,green:0.11,blue:0.07,alpha:1)
+                  ]
+                  let tileS: CGFloat = 90
+                  let cols = Int(mapW/tileS)+1, rows = Int(mapH/tileS)+1
+                  for r in 0..<rows { for c in 0..<cols {
+                      let tile = SKShapeNode(rectOf:CGSize(width:tileS-1,height:tileS-1))
+                      tile.fillColor = tileColors[(r+c) % tileColors.count]; tile.strokeColor = UIColor(white:0,alpha:0.15); tile.lineWidth = 1
+                      tile.position = CGPoint(x:CGFloat(c)*tileS+tileS/2, y:CGFloat(r)*tileS+tileS/2); tile.zPosition = 0
+                      worldNode.addChild(tile)
+                  }}
+                  // Border walls
+                  buildWall(rect:CGRect(x:0,y:-30,width:mapW,height:30))
+                  buildWall(rect:CGRect(x:0,y:mapH,width:mapW,height:30))
+                  buildWall(rect:CGRect(x:-30,y:0,width:30,height:mapH))
+                  buildWall(rect:CGRect(x:mapW,y:0,width:30,height:mapH))
+                  // Interior obstacles
+                  let obstacles: [(CGFloat,CGFloat,CGFloat,CGFloat)] = [
+                      (250,300,120,80),(600,700,80,200),(900,200,200,80),(1200,500,90,300),
+                      (400,900,150,90),(700,1100,80,160),(1100,900,200,80),(1400,300,80,220),
+                      (1500,1000,140,90),(300,600,90,90),(1000,700,90,90),(800,400,100,60)
+                  ]
+                  for (x,y,w,h) in obstacles {
+                      buildWall(rect:CGRect(x:x,y:y,width:w,height:h))
+                      // Dark decal on top
+                      let deco = SKShapeNode(rectOf:CGSize(width:w-8,height:h-8),cornerRadius:4)
+                      deco.fillColor = UIColor(red:0.08,green:0.06,blue:0.04,alpha:1); deco.strokeColor = .clear
+                      deco.position = CGPoint(x:x+w/2,y:y+h/2); deco.zPosition = 1.5; worldNode.addChild(deco)
+                  }
+                  // Torches (atmospheric lights)
+                  let torchPositions: [(CGFloat,CGFloat)] = [(180,180),(900,900),(1600,200),(400,1200),(1300,1100),(800,600)]
+                  for (tx,ty) in torchPositions { buildTorch(at:CGPoint(x:tx,y:ty)) }
+              }
+
+              private func buildWall(rect r: CGRect) {
+                  let wall = SKShapeNode(rectOf:CGSize(width:r.width,height:r.height))
+                  wall.fillColor = UIColor(red:0.16,green:0.12,blue:0.08,alpha:1)
+                  wall.strokeColor = UIColor(red:0.24,green:0.18,blue:0.10,alpha:1); wall.lineWidth = 2
+                  wall.position = CGPoint(x:r.midX,y:r.midY); wall.zPosition = 3
+                  wall.physicsBody = SKPhysicsBody(rectangleOf:CGSize(width:r.width,height:r.height))
+                  wall.physicsBody?.isDynamic = false; wall.physicsBody?.categoryBitMask = PhysicsCategory.wall
+                  wall.physicsBody?.collisionBitMask = PhysicsCategory.player | PhysicsCategory.enemy | PhysicsCategory.boss
+                  worldNode.addChild(wall)
+              }
+
+              private func buildTorch(at pos: CGPoint) {
+                  let stick = SKShapeNode(rectOf:CGSize(width:6,height:22),cornerRadius:2)
+                  stick.fillColor = UIColor(red:0.38,green:0.22,blue:0.08,alpha:1); stick.strokeColor = .clear
+                  stick.position = pos; stick.zPosition = 4; worldNode.addChild(stick)
+                  let flame = SKShapeNode(ellipseOf:CGSize(width:10,height:14))
+                  flame.fillColor = UIColor(red:1,green:0.55,blue:0.1,alpha:0.85); flame.strokeColor = .clear
+                  flame.position = CGPoint(x:pos.x,y:pos.y+16); flame.zPosition = 5; worldNode.addChild(flame)
+                  flame.run(SKAction.repeatForever(SKAction.sequence([
+                      SKAction.group([SKAction.scale(to:1.2,duration:0.12),SKAction.fadeAlpha(to:0.65,duration:0.12)]),
+                      SKAction.group([SKAction.scale(to:0.85,duration:0.09),SKAction.fadeAlpha(to:0.95,duration:0.09)]),
+                      SKAction.group([SKAction.scale(to:1.1,duration:0.10),SKAction.fadeAlpha(to:0.75,duration:0.10)]),
+                      SKAction.group([SKAction.scale(to:0.90,duration:0.11),SKAction.fadeAlpha(to:0.85,duration:0.11)])])))
+                  let glow = SKShapeNode(circleOfRadius:60)
+                  glow.fillColor = UIColor(red:1,green:0.6,blue:0.1,alpha:0.06); glow.strokeColor = .clear
+                  glow.position = CGPoint(x:pos.x,y:pos.y+16); glow.zPosition = 3; worldNode.addChild(glow)
+              }
+
+              // MARK: – Player Spawn
+              private func spawnPlayer() {
+                  player = PlayerNode(); player.position = CGPoint(x:mapW/2,y:mapH/2)
+                  worldNode.addChild(player)
+              }
+
+              // MARK: – Camera
+              private func setupCamera() {
+                  let cam = SKCameraNode(); camera = cam; addChild(cam)
+              }
+
+              // MARK: – HUD
+              private func setupHUD() {
+                  hud = HUDNode(); hud.setup(size:size); camera?.addChild(hud)
+              }
+
+              // MARK: – Joysticks
+              private func setupJoysticks() {
+                  let jR = size.height * 0.13
+                  moveJS = JoystickNode(radius:jR); moveJS.position = CGPoint(x:-size.width/2+jR+24, y:-size.height/2+jR+24)
+                  aimJS  = JoystickNode(radius:jR); aimJS.position  = CGPoint(x: size.width/2-jR-24, y:-size.height/2+jR+24)
+                  camera?.addChild(moveJS); camera?.addChild(aimJS)
+              }
+
+              // MARK: – Ambience
+              private func buildAmbience() {
+                  // Random grass patches
+                  for _ in 0..<60 {
+                      let g = SKShapeNode(ellipseOf:CGSize(width:CGFloat.random(in:20...50),height:CGFloat.random(in:10...20)))
+                      g.fillColor = UIColor(red:0.08,green:0.12,blue:0.05,alpha:CGFloat.random(in:0.2...0.5)); g.strokeColor = .clear
+                      g.position = CGPoint(x:CGFloat.random(in:50...mapW-50),y:CGFloat.random(in:50...mapH-50)); g.zPosition = 1; worldNode.addChild(g)
+                  }
+              }
+
+              // MARK: – Wave Spawning
+              private func spawnWave() {
+                  wave += 1; waveActive = true
+                  hud.showMessage("⚠ WAVE \(wave) ⚠", color:UIColor(red:1,green:0.2,blue:0.2,alpha:1), duration:2.5)
+
+                  if wave == 5 { spawnBoss(); return }
+
+                  var composition: [EnemyType] = []
+                  let extra = max(0, wave-1)
+                  for _ in 0..<(3+wave*2+extra) { composition.append(.villager) }
+                  for _ in 0..<(wave/2)          { composition.append(.brute) }
+                  for _ in 0..<(wave/2)          { composition.append(.fast) }
+                  for _ in 0..<(wave > 3 ? 1 : 0){ composition.append(.cultist) }
+
+                  for (i,type) in composition.enumerated() {
+                      run(SKAction.sequence([SKAction.wait(forDuration:Double(i)*0.35), SKAction.run { [weak self] in self?.spawnEnemy(type:type) }]))
+                  }
+                  // Drop ammo crate
+                  if wave > 1 { run(SKAction.sequence([SKAction.wait(forDuration:1.0), SKAction.run { [weak self] in self?.dropAmmoCrate() }])) }
+              }
+
+              private func spawnEnemy(type: EnemyType) {
+                  let e = EnemyNode(type:type)
+                  e.position = randomEdgeSpawn(); worldNode.addChild(e); enemies.append(e)
+              }
+
+              private func spawnBoss() {
+                  bossSpawned = true
+                  hud.showMessage("⚠ EL GIGANTE ARRIVES ⚠", color:UIColor(red:1,green:0,blue:0,alpha:1), duration:3.0)
+                  let boss = EnemyNode(type:.boss)
+                  boss.position = CGPoint(x:mapW*0.15, y:mapH*0.5); worldNode.addChild(boss); enemies.append(boss)
+                  // Escort villagers
+                  for i in 0..<6 {
+                      run(SKAction.sequence([SKAction.wait(forDuration:Double(i)*0.4), SKAction.run { [weak self] in self?.spawnEnemy(type:.villager) }]))
+                  }
+              }
+
+              private func randomEdgeSpawn() -> CGPoint {
+                  let edge = Int.random(in:0...3)
+                  let margin: CGFloat = 60
+                  switch edge {
+                  case 0: return CGPoint(x:CGFloat.random(in:margin...mapW-margin), y:margin)
+                  case 1: return CGPoint(x:CGFloat.random(in:margin...mapW-margin), y:mapH-margin)
+                  case 2: return CGPoint(x:margin, y:CGFloat.random(in:margin...mapH-margin))
+                  default: return CGPoint(x:mapW-margin, y:CGFloat.random(in:margin...mapH-margin))
+                  }
+              }
+
+              private func dropAmmoCrate() {
+                  let x = CGFloat.random(in:200...mapW-200), y = CGFloat.random(in:200...mapH-200)
+                  let crate = SKShapeNode(rectOf:CGSize(width:28,height:28),cornerRadius:4)
+                  crate.fillColor = UIColor(red:0.7,green:0.5,blue:0.15,alpha:1); crate.strokeColor = UIColor(red:0.9,green:0.7,blue:0.2,alpha:1); crate.lineWidth = 2
+                  crate.position = CGPoint(x:x,y:y); crate.zPosition = 6; crate.name = "ammo_crate"
+                  let icon = SKLabelNode(fontNamed:"Courier-Bold"); icon.text = "📦"; icon.fontSize = 16; icon.verticalAlignmentMode = .center; icon.name = "ammo_crate"
+                  crate.addChild(icon)
+                  crate.physicsBody = SKPhysicsBody(rectangleOf:CGSize(width:28,height:28))
+                  crate.physicsBody?.categoryBitMask    = PhysicsCategory.item
+                  crate.physicsBody?.contactTestBitMask = PhysicsCategory.player
+                  crate.physicsBody?.collisionBitMask   = PhysicsCategory.none
+                  crate.physicsBody?.isDynamic = false
+                  worldNode.addChild(crate)
+                  crate.run(SKAction.repeatForever(SKAction.sequence([SKAction.scale(to:1.12,duration:0.6),SKAction.scale(to:0.9,duration:0.6)])))
+                  crate.run(SKAction.sequence([SKAction.wait(forDuration:12),SKAction.fadeOut(withDuration:0.5),SKAction.removeFromParent()]))
+              }
+
+              private func dropHealthPack(at pos: CGPoint) {
+                  let pack = SKShapeNode(circleOfRadius:14)
+                  pack.fillColor = UIColor(red:0.8,green:0.0,blue:0.1,alpha:1); pack.strokeColor = UIColor(red:1,green:0.3,blue:0.3,alpha:1); pack.lineWidth = 2
+                  pack.position = pos; pack.zPosition = 6; pack.name = "health_pack"
+                  let cross = SKLabelNode(fontNamed:"Courier-Bold"); cross.text = "+"; cross.fontSize = 20; cross.fontColor = .white; cross.verticalAlignmentMode = .center; cross.name = "health_pack"
+                  pack.addChild(cross)
+                  pack.physicsBody = SKPhysicsBody(circleOfRadius:14)
+                  pack.physicsBody?.categoryBitMask    = PhysicsCategory.item
+                  pack.physicsBody?.contactTestBitMask = PhysicsCategory.player
+                  pack.physicsBody?.collisionBitMask   = PhysicsCategory.none; pack.physicsBody?.isDynamic = false
+                  worldNode.addChild(pack)
+                  pack.run(SKAction.sequence([SKAction.wait(forDuration:10),SKAction.fadeOut(withDuration:0.5),SKAction.removeFromParent()]))
+              }
+
+              // MARK: – Touch
+              override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
+                  for t in touches {
+                      let locHUD = t.location(in:camera!)
+                      for n in nodes(at:locHUD) { if n.name == "swap_btn" { player.nextWeapon(); return } }
+                      let locJS = t.location(in:camera!)
+                      let mBounds = CGRect(origin:CGPoint(x:moveJS.position.x-moveJS.radius,y:moveJS.position.y-moveJS.radius),
+                                           size:CGSize(width:moveJS.radius*2,height:moveJS.radius*2))
+                      if mBounds.contains(locJS) && moveJS.trackingTouch == nil { moveJS.trackingTouch = t; continue }
+                      let aBounds = CGRect(origin:CGPoint(x:aimJS.position.x-aimJS.radius,y:aimJS.position.y-aimJS.radius),
+                                           size:CGSize(width:aimJS.radius*2,height:aimJS.radius*2))
+                      if aBounds.contains(locJS) && aimJS.trackingTouch == nil { aimJS.trackingTouch = t; aimTouch = t; isAutoShooting = true; continue }
+                      // Tap-to-aim anywhere right side
+                      if locHUD.x > 0 { aimTouch = t; isAutoShooting = true }
+                  }
+              }
+
+              override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent?) {
+                  for t in touches {
+                      let loc = t.location(in:camera!)
+                      if t === moveJS.trackingTouch { moveJS.move(to:loc) }
+                      if t === aimJS.trackingTouch  { aimJS.move(to:loc); let wl = t.location(in:worldNode); aimAt(worldPt:wl) }
+                  }
+              }
+
+              override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) {
+                  for t in touches {
+                      if t === moveJS.trackingTouch { moveJS.reset() }
+                      if t === aimJS.trackingTouch  { aimJS.reset(); isAutoShooting = false; aimTouch = nil }
+                      if t === aimTouch && t !== aimJS.trackingTouch { isAutoShooting = false; aimTouch = nil }
+                  }
+              }
+
+              override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) {
+                  touchesEnded(touches, with:event)
+              }
+
+              private func aimAt(worldPt pt: CGPoint) {
+                  let dx = pt.x - player.position.x, dy = pt.y - player.position.y
+                  player.setFacing(angle:atan2(dy,dx))
+                  hud.showCrosshair(at:convert(pt,to:camera!))
+              }
+
+              // MARK: – Update Loop
+              override func update(_ currentTime: TimeInterval) {
+                  guard !gameOver, let p = player as PlayerNode?, p.isAlive else { return }
+                  let dt = lastUpdate == 0 ? 0 : min(currentTime - lastUpdate, 0.05)
+                  lastUpdate = currentTime
+
+                  movePlayer(dt:dt)
+                  updateCamera()
+                  updateEnemyAI(currentTime:currentTime)
+                  updateHUD()
+                  updateWaveLogic(dt:dt)
+                  if isAutoShooting { player.shoot(in:worldNode) }
+              }
+
+              private func movePlayer(dt: TimeInterval) {
+                  guard moveJS.isActive else { player.physicsBody?.velocity = .zero; return }
+                  let speed: CGFloat = 200
+                  let v = moveJS.velocity
+                  player.physicsBody?.velocity = CGVector(dx:v.dx*speed, dy:v.dy*speed)
+                  player.position.x = max(30, min(mapW-30, player.position.x))
+                  player.position.y = max(30, min(mapH-30, player.position.y))
+                  // If not using aim joystick, face movement direction
+                  if !aimJS.isActive { player.setFacing(angle:atan2(v.dy,v.dx)) }
+              }
+
+              private func updateCamera() {
+                  let half = CGPoint(x:size.width/2, y:size.height/2)
+                  let cx = max(half.x, min(mapW-half.x, player.position.x))
+                  let cy = max(half.y, min(mapH-half.y, player.position.y))
+                  camera?.position = CGPoint(x:cx, y:cy)
+              }
+
+              private func updateEnemyAI(currentTime: TimeInterval) {
+                  enemies = enemies.filter{$0.parent != nil && $0.isAlive}
+                  for e in enemies {
+                      e.moveToward(target:player.position)
+                      if e.canAttack(at:currentTime) {
+                          let dx = player.position.x-e.position.x, dy = player.position.y-e.position.y
+                          if sqrt(dx*dx+dy*dy) < (e.enemyType.radius + 24) {
+                              e.lastAttackTime = currentTime
+                              player.takeDamage(e.enemyType.damage)
+                              screenShake()
+                          }
+                      }
+                  }
+              }
+
+              private func updateHUD() {
+                  hud.update(health:player.health, maxHealth:player.maxHealth,
+                             ammo:player.ammo[player.currentWeapon] ?? 0,
+                             totalAmmo:player.totalAmmo[player.currentWeapon] ?? 0,
+                             weapon:player.currentWeapon, score:player.score,
+                             wave:wave, isReloading:player.isReloading)
+                  if !player.isAlive { triggerGameOver(victory:false) }
+              }
+
+              private func updateWaveLogic(dt: TimeInterval) {
+                  if waveActive {
+                      let alive = enemies.filter{$0.isAlive}
+                      if alive.isEmpty { waveActive = false; waveTimer = waveDelay
+                          if bossSpawned { triggerGameOver(victory:true); return }
+                          hud.showMessage("WAVE CLEAR! +500", color:UIColor(red:0.2,green:1,blue:0.2,alpha:1), duration:2.0)
+                          player.score += 500
+                          if wave % 2 == 0 { dropHealthPack(at:CGPoint(x:mapW/2,y:mapH/2)) }
+                      }
+                  } else {
+                      waveTimer -= dt
+                      if waveTimer <= 0 { spawnWave() }
+                  }
+              }
+
+              // MARK: – Physics Contact
+              func didBegin(_ contact: SKPhysicsContact) {
+                  let a = contact.bodyA, b = contact.bodyB
+                  let aM = a.categoryBitMask, bM = b.categoryBitMask
+
+                  // Bullet hits enemy
+                  if (aM == PhysicsCategory.bullet && (bM == PhysicsCategory.enemy || bM == PhysicsCategory.boss)) ||
+                     (bM == PhysicsCategory.bullet && (aM == PhysicsCategory.enemy || aM == PhysicsCategory.boss)) {
+                      let bullet  = (aM == PhysicsCategory.bullet ? a : b).node as? BulletNode
+                      let enemy   = (aM == PhysicsCategory.enemy || aM == PhysicsCategory.boss ? a : b).node as? EnemyNode
+                      if let bl = bullet, let en = enemy {
+                          bl.removeFromParent(); let died = !en.isAlive
+                          en.takeDamage(bl.damage)
+                          if !died && !en.isAlive { player.score += en.enemyType.scoreValue; spawnScorePopup(at:en.position, score:en.enemyType.scoreValue) }
+                      }
+                  }
+                  // Bullet hits wall
+                  if aM == PhysicsCategory.bullet || bM == PhysicsCategory.bullet {
+                      let bullet = (aM == PhysicsCategory.bullet ? a : b).node
+                      bullet?.removeFromParent()
+                  }
+                  // Player picks up item
+                  if (aM == PhysicsCategory.player && bM == PhysicsCategory.item) ||
+                     (bM == PhysicsCategory.player && aM == PhysicsCategory.item) {
+                      let item = (aM == PhysicsCategory.item ? a : b).node
+                      if let name = item?.name {
+                          if name == "ammo_crate" {
+                              player.addAmmo(for:.pistol,  amount:15)
+                              player.addAmmo(for:.shotgun, amount:8)
+                              player.addAmmo(for:.rifle,   amount:10)
+                              player.unlockWeapon(.shotgun); player.unlockWeapon(.rifle)
+                              hud.showMessage("AMMO + WEAPON UNLOCKED!", color:UIColor(red:1,green:0.9,blue:0.2,alpha:1), duration:1.8)
+                          } else if name == "health_pack" {
+                              player.heal(40); hud.showMessage("+ 40 HP", color:UIColor(red:0.2,green:1,blue:0.2,alpha:1), duration:1.5)
+                          }
+                          item?.removeFromParent()
+                      }
+                  }
+              }
+
+              // MARK: – Helpers
+              private func spawnScorePopup(at pos: CGPoint, score: Int) {
+                  let l = SKLabelNode(fontNamed:"Courier-Bold"); l.text = "+\(score)"; l.fontSize = 18
+                  l.fontColor = UIColor(red:1,green:0.9,blue:0.2,alpha:1); l.position = pos; l.zPosition = 30
+                  worldNode.addChild(l)
+                  l.run(SKAction.sequence([SKAction.group([SKAction.moveBy(x:0,y:45,duration:0.8),SKAction.fadeOut(withDuration:0.8)]),SKAction.removeFromParent()]))
+              }
+
+              private func screenShake() {
+                  camera?.removeAction(forKey:"shake")
+                  let dur = 0.06, amp: CGFloat = 8
+                  camera?.run(SKAction.sequence([
+                      SKAction.moveBy(x:amp,y:-amp,duration:dur), SKAction.moveBy(x:-amp,y:amp,duration:dur),
+                      SKAction.moveBy(x:amp*0.5,y:amp*0.5,duration:dur), SKAction.moveBy(x:-amp*0.5,y:-amp*0.5,duration:dur)
+                  ]), withKey:"shake")
+              }
+
+              private func triggerGameOver(victory: Bool) {
+                  guard !gameOver else { return }
+                  gameOver = true; isPaused_ = true; physicsWorld.speed = 0
+                  run(SKAction.sequence([
+                      SKAction.wait(forDuration:1.5),
+                      SKAction.run { [weak self] in
+                          guard let s = self else { return }
+                          let go = GameOverScene(size:s.size, score:s.player.score, wave:s.wave, isVictory:victory)
+                          go.scaleMode = .aspectFill
+                          s.view?.presentScene(go, transition:.fade(withDuration:1.4))
+                      }
+                  ]))
+              }
+          }
+          EOF
+
+      # ── project.yml (XcodeGen) ─────────────────────────────────────────────
+      - name: 📄 project.yml
+        run: |
+          cat > ShadowVillage/project.yml << 'EOF'
+          name: ShadowVillage
+          options:
+            bundleIdPrefix: com.shadowvillage
+            createIntermediateGroups: true
+            deploymentTarget:
+              iOS: "16.0"
+          settings:
+            base:
+              SWIFT_VERSION: "5.9"
+              DEVELOPMENT_TEAM: ""
+              PRODUCT_BUNDLE_IDENTIFIER: com.shadowvillage.game
+              TARGETED_DEVICE_FAMILY: "1"
+              IPHONEOS_DEPLOYMENT_TARGET: "16.0"
+              CODE_SIGN_IDENTITY: ""
+              CODE_SIGNING_REQUIRED: "NO"
+              CODE_SIGNING_ALLOWED: "NO"
+              ENABLE_BITCODE: "NO"
+              DEBUG_INFORMATION_FORMAT: dwarf
+              SUPPORTS_MACCATALYST: "NO"
+              SWIFT_OPTIMIZATION_LEVEL: "-O"
+              OTHER_LDFLAGS: "-framework SpriteKit"
+          targets:
+            ShadowVillage:
+              type: application
+              platform: iOS
+              deploymentTarget: "16.0"
+              sources:
+                - path: Sources
+              resources:
+                - path: Resources
+              settings:
+                base:
+                  INFOPLIST_FILE: Resources/Info.plist
+                  PRODUCT_NAME: ShadowVillage
+                  ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+                  SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD: "NO"
+                  CURRENT_PROJECT_VERSION: "1"
+                  MARKETING_VERSION: "1.0"
+              frameworks:
+                - SDK: SpriteKit.framework
+                - SDK: UIKit.framework
+                - SDK: GameplayKit.framework
+                - SDK: AVFoundation.framework
+          EOF
+
+      # ── Info.plist ─────────────────────────────────────────────────────────
+      - name: 📄 Info.plist
+        run: |
+          cat > ShadowVillage/Resources/Info.plist << 'EOF'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+              <key>CFBundleDevelopmentRegion</key><string>en</string>
+              <key>CFBundleDisplayName</key><string>Shadow Village</string>
+              <key>CFBundleExecutable</key><string>$(EXECUTABLE_NAME)</string>
+              <key>CFBundleIdentifier</key><string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+              <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
+              <key>CFBundleName</key><string>ShadowVillage</string>
+              <key>CFBundlePackageType</key><string>APPL</string>
+              <key>CFBundleShortVersionString</key><string>1.0</string>
+              <key>CFBundleVersion</key><string>1</string>
+              <key>LSRequiresIPhoneOS</key><true/>
+              <key>UILaunchStoryboardName</key><string>LaunchScreen</string>
+              <key>UISupportedInterfaceOrientations</key>
+              <array>
+                  <string>UIInterfaceOrientationLandscapeLeft</string>
+                  <string>UIInterfaceOrientationLandscapeRight</string>
+              </array>
+              <key>UIRequiresFullScreen</key><true/>
+              <key>UIStatusBarHidden</key><true/>
+              <key>UIViewControllerBasedStatusBarAppearance</key><false/>
+              <key>NSAppTransportSecurity</key><dict><key>NSAllowsArbitraryLoads</key><true/></dict>
+          </dict>
+          </plist>
+          EOF
+
+      # ── LaunchScreen ───────────────────────────────────────────────────────
+      - name: 📄 LaunchScreen.storyboard
+        run: |
+          mkdir -p ShadowVillage/Resources
+          cat > ShadowVillage/Resources/LaunchScreen.storyboard << 'EOF'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <document type="com.apple.InterfaceBuilder3.CocoaTouch.Storyboard.XIB" version="3.0" toolsVersion="21701" targetRuntime="AppleCocoa Touch" propertyAccessControl="none" useAutolayout="YES" launchScreen="YES" useTraitCollections="YES" useSafeAreas="YES">
+              <dependencies><plugIn identifier="com.apple.InterfaceBuilder.IBCocoaTouchPlugin" version="21678"/></dependencies>
+              <scenes>
+                  <scene sceneID="s01">
+                      <objects>
+                          <viewController id="01J" sceneMemberID="viewController">
+                              <view key="view" contentMode="scaleToFill" id="Ze5">
+                                  <rect key="frame" x="0" y="0" width="430" height="932"/>
+                                  <autoresizingMask key="autoresizingMask" widthSizable="YES" heightSizable="YES"/>
+                                  <color key="backgroundColor" red="0.04" green="0.03" blue="0.02" alpha="1" colorSpace="custom" customColorSpace="sRGB"/>
+                                  <label opaque="NO" userInteractionEnabled="NO" contentMode="left" horizontalHuggingPriority="251" verticalHuggingPriority="251" text="SHADOW VILLAGE" textAlignment="center" lineBreakMode="middleTruncation" baselineAdjustment="alignBaselines" adjustsFontSizeToFit="NO" translatesAutoresizingMaskIntoConstraints="NO" id="lbl">
+                                      <rect key="frame" x="0" y="400" width="430" height="60"/>
+                                      <fontDescription key="fontDescription" type="boldSystem" pointSize="42"/>
+                                      <color key="textColor" red="0.9" green="0.08" blue="0.08" alpha="1" colorSpace="custom" customColorSpace="sRGB"/>
+                                      <nil key="highlightedColor"/>
+                                  </label>
+                              </view>
+                          </viewController>
+                          <placeholder placeholderIdentifier="IBFirstResponder" id="iB" sceneMemberID="firstResponder"/>
+                      </objects>
+                  </scene>
+              </scenes>
+          </document>
+          EOF
+
+      # ── AppIcon Placeholder ────────────────────────────────────────────────
+      - name: 🎨 Generate AppIcon Assets
+        run: |
+          mkdir -p ShadowVillage/Resources/Assets.xcassets/AppIcon.appiconset
+          cat > ShadowVillage/Resources/Assets.xcassets/AppIcon.appiconset/Contents.json << 'EOF'
+          {
+            "images": [
+              {"idiom":"universal","platform":"ios","size":"1024x1024","filename":"icon_1024.png","scale":"1x"}
+            ],
+            "info":{"author":"xcode","version":1}
+          }
+          EOF
+          cat > ShadowVillage/Resources/Assets.xcassets/Contents.json << 'EOF'
+          {"info":{"author":"xcode","version":1}}
+          EOF
+          # Generate 1024x1024 icon using Python (dark red horror style)
+          python3 << 'PYEOF'
+          import struct, zlib, math
+
+          def make_png(w, h):
+              def u32(n): return struct.pack('>I', n)
+              def chunk(t, d): c = zlib.crc32(t+d)&0xffffffff; return u32(len(d))+t+d+u32(c)
+              rows = []
+              for y in range(h):
+                  row = [0]
+                  for x in range(w):
+                      cx, cy = x-w//2, y-h//2
+                      dist = math.sqrt(cx*cx+cy*cy)
+                      # Dark radial gradient background
+                      bg_r = max(0, int(20 - dist*0.015))
+                      bg_g = max(0, int(3  - dist*0.002))
+                      bg_b = max(0, int(3  - dist*0.002))
+                      # Blood moon circle
+                      moon_dist = math.sqrt((cx-w*0.28)**2 + (cy+h*0.22)**2)
+                      if moon_dist < w*0.18:
+                          f = 1 - moon_dist/(w*0.18)
+                          r = int(180*f + bg_r*(1-f))
+                          g = int(20*f  + bg_g*(1-f))
+                          b = int(10*f  + bg_b*(1-f))
+                      # "S" letter in center
+                      elif abs(cx) < w*0.12 and abs(cy) < h*0.20:
+                          r,g,b = int(220*0.7), int(10*0.7), int(10*0.7)
+                      else:
+                          r,g,b = bg_r,bg_g,bg_b
+                      row += [min(255,r), min(255,g), min(255,b)]
+                  rows.append(bytes(row))
+              raw = zlib.compress(b''.join(rows), 9)
+              sig = b'\x89PNG\r\n\x1a\n'
+              ihdr_d = u32(w)+u32(h)+bytes([8,2,0,0,0])
+              return sig+chunk(b'IHDR',ihdr_d)+chunk(b'IDAT',raw)+chunk(b'IEND',b'')
+
+          with open('ShadowVillage/Resources/Assets.xcassets/AppIcon.appiconset/icon_1024.png','wb') as f:
+              f.write(make_png(1024,1024))
+          print("Icon generated")
+          PYEOF
+
+      # ── Generate Xcode Project ─────────────────────────────────────────────
+      - name: 🔨 Generate Xcode Project
+        working-directory: ShadowVillage
+        run: xcodegen generate --spec project.yml --project .
+
+      # ── Build (unsigned) ───────────────────────────────────────────────────
+      - name: 🏗 Build for iPhone 15 Pro Max (unsigned)
+        working-directory: ShadowVillage
+        run: |
+          xcodebuild \
+            -project ShadowVillage.xcodeproj \
+            -scheme ShadowVillage \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination "generic/platform=iOS" \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            DEVELOPMENT_TEAM="" \
+            ENABLE_BITCODE=NO \
+            SWIFT_VERSION=5.9 \
+            clean build \
+            OBJROOT="${{ github.workspace }}/build/obj" \
+            SYMROOT="${{ github.workspace }}/build/sym" \
+            2>&1 | tee build.log | xcpretty || (cat build.log && exit 1)
+
+      # ── xcpretty install ───────────────────────────────────────────────────
+      - name: 📦 Install xcpretty
+        run: gem install xcpretty --no-document 2>/dev/null || true
+
+      # ── Package into .ipa ──────────────────────────────────────────────────
+      - name: 📦 Package IPA
+        run: |
+          APP_PATH=$(find ${{ github.workspace }}/build/sym -name "ShadowVillage.app" -type d | head -1)
+          echo "App found at: $APP_PATH"
+          
+          mkdir -p Payload
+          cp -r "$APP_PATH" Payload/ShadowVillage.app
+          
+          # Remove any signing artifacts that cause sideload issues
+          rm -rf Payload/ShadowVillage.app/_CodeSignature || true
+          codesign --remove-signature Payload/ShadowVillage.app 2>/dev/null || true
+          
+          # Create IPA
+          zip -r ShadowVillage.ipa Payload
+          
+          echo "✅ IPA created: $(du -sh ShadowVillage.ipa | cut -f1)"
+          echo "IPA_PATH=${{ github.workspace }}/ShadowVillage.ipa" >> $GITHUB_ENV
+
+      # ── Upload Artifact ────────────────────────────────────────────────────
+      - name: 📤 Upload IPA Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ShadowVillage-iPhone15ProMax
+          path: ShadowVillage.ipa
+          retention-days: 30
+
+      # ── Build Summary ──────────────────────────────────────────────────────
+      - name: 📋 Build Summary
+        run: |
+          echo ""
+          echo "╔══════════════════════════════════════════════════════════════╗"
+          echo "║         🎮 SHADOW VILLAGE – BUILD COMPLETE 🎮               ║"
+          echo "╠══════════════════════════════════════════════════════════════╣"
+          echo "║  IPA: ShadowVillage.ipa                                     ║"
+          echo "║  Target: iPhone 15 Pro Max (iOS 16+)                        ║"
+          echo "╠══════════════════════════════════════════════════════════════╣"
+          echo "║  HOW TO SIDELOAD:                                           ║"
+          echo "║  1. Download IPA from Actions > Artifacts                   ║"
+          echo "║  2. Install AltStore on your iPhone:                        ║"
+          echo "║     https://altstore.io                                     ║"
+          echo "║  3. Open AltStore on iPhone > + > Choose IPA                ║"
+          echo "║  OR use Sideloadly (Windows/Mac):                           ║"
+          echo "║     https://sideloadly.io                                   ║"
+          echo "╠══════════════════════════════════════════════════════════════╣"
+          echo "║  CONTROLS:                                                  ║"
+          echo "║  Left Joystick → Move Leon                                  ║"
+          echo "║  Right Joystick → Aim & Auto-Fire                           ║"
+          echo "║  SWAP Button   → Switch weapon                              ║"
+          echo "║  Right side tap → Manual fire                               ║"
+          echo "╠══════════════════════════════════════════════════════════════╣"
+          echo "║  GAME FEATURES:                                             ║"
+          echo "║  • 5 enemy types (Villager/Brute/Fast/Cultist/Boss)         ║"
+          echo "║  • 3 weapons (Handgun/Shotgun/Rifle)                        ║"
+          echo "║  • Wave-based survival (5 waves + Boss fight)               ║"
+          echo "║  • Dynamic map with torches, obstacles, fog                 ║"
+          echo "║  • Blood effects, muzzle flash, screen shake                ║"
+          echo "║  • Score system with S-D rank                               ║"
+          echo "║  • Full horror atmosphere                                   ║"
+          echo "╚══════════════════════════════════════════════════════════════╝"
+          echo ""
